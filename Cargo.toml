@@ -4,10 +4,11 @@ description = "Texture atlas generation (guillotine with dynamic resizing.)"
 repository = "https://github.com/quadrupleslap/atlas"
 documentation = "https://docs.rs/atlas"
 license = "MIT"
-version = "0.1.0"
+version = "0.2.0"
 authors = ["Ram <quadrupleslap@gmail.com>"]
 
 [dependencies]
+bytes = "0.4"
 framing = "0.3"
 
 [dev-dependencies]

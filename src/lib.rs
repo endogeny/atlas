@@ -2,12 +2,12 @@
 
 //! Putting textures together, hopefully without wasting too much space.
 
+extern crate bytes;
 extern crate framing;
 
-use framing::{AsBytes, Image, Function, ChunkyFrame};
-use std::mem;
-
-// TODO(quadrupleslap): Current algorithm sucks, write a better one.
+use bytes::{BytesMut, BufMut};
+use framing::{AsBytes, Image, ChunkyFrame};
+use std::{mem, ptr};
 
 /// Stores images, and automatically stitches them together.
 ///
@@ -16,7 +16,10 @@ use std::mem;
 /// terms of decreasing size. Particularly good orders are by `width * height`
 /// and by `max(width, height)`, both in descending order.
 pub struct Atlas<T> {
-    image: Option<Box<Image<Pixel = T> + Sync>>,
+    bytes: BytesMut,
+    scratch: BytesMut,
+    width: usize,
+    height: usize,
     blank: T,
     rects: Vec<Rect>
 }
@@ -29,8 +32,11 @@ impl<T> Atlas<T> {
     /// achieved.
     pub fn new(blank: T) -> Self {
         Atlas {
-            image: None,
-            blank,
+            bytes: BytesMut::new(),
+            scratch: BytesMut::new(),
+            width: 0,
+            height: 0,
+            blank: blank,
             rects: Vec::new()
         }
     }
@@ -43,201 +49,255 @@ impl<T> Atlas<T> {
     /// *technically* valid.
     pub fn add<U>(&mut self, image: U) -> (usize, usize)
     where
-        T: Clone + Sync + 'static,
-        U: Into<Box<Image<Pixel = T> + Sync>>
+        T: AsBytes + Clone + Sync + 'static,
+        U: Image<Pixel = T> + Sync
     {
-        let image = image.into();
-        let mut current = None;
-        mem::swap(&mut self.image, &mut current);
-
         let (w, h) = (image.width(), image.height());
 
         if w == 0 || h == 0 {
             return (0, 0);
         }
 
-        if let Some(current) = current {
-            let (cur_width, cur_height) = (current.width(), current.height());
+        if self.width == 0 || self.height == 0 {
+            self.bytes.reserve(T::width() * w * h);
+            self.width = w;
+            self.height = h;
 
-            let result = self.rects.iter()
-                .enumerate()
-                .filter(|&(_, rect)| w <= rect.w && h <= rect.h)
-                .min_by_key(|&(_, rect)| {
-                    let (dw, dh) = (rect.w - w, rect.h - h);
-                    if dh < dw { dh } else { dw }
-                })
-                .map(|(i, rect)| (i, rect.clone()));
+            for (_, _, pixel) in framing::iter(&image) {
+                self.bytes.put_slice(T::Bytes::from(pixel).as_ref())
+            }
 
-            if let Some((i, rect)) = result {
-                self.rects.remove(i);
+            return (0, 0);
+        }
 
-                if rect.w != w {
+        let result = self.rects.iter()
+            .enumerate()
+            .filter(|&(_, rect)| w <= rect.w && h <= rect.h)
+            .min_by_key(|&(_, rect)| {
+                let (dw, dh) = (rect.w - w, rect.h - h);
+                if dh < dw { dh } else { dw }
+            })
+            .map(|(i, rect)| (i, rect.clone()));
+
+        if let Some((i, rect)) = result {
+            self.rects.remove(i);
+
+            if rect.w != w {
+                self.rects.push(Rect {
+                    x: rect.x + w,
+                    y: rect.y,
+                    w: rect.w - w,
+                    h: h
+                });
+            }
+
+            if rect.h != h {
+                self.rects.push(Rect {
+                    x: rect.x,
+                    y: rect.y + h,
+                    w: w,
+                    h: rect.h - h
+                });
+            }
+
+            if rect.w != w && rect.h != h {
+                self.rects.push(Rect {
+                    x: rect.x + w,
+                    y: rect.y + h,
+                    w: rect.w - w,
+                    h: rect.h - h
+                });
+            }
+
+            // The image fits!
+            for y in 0..h {
+            for x in 0..w {
+                let i = T::width() * (self.width * (rect.y + y) + (rect.x + x));
+                let p = T::Bytes::from(unsafe {
+                    image.pixel(x, y)
+                });
+
+                unsafe {
+                    ptr::copy_nonoverlapping(
+                        p.as_ref().as_ptr(),
+                        self.bytes.as_mut_ptr().offset(i as isize),
+                        T::width()
+                    )
+                }
+            }}
+
+            (rect.x, rect.y)
+        } else {
+            // The image doesn't fit.
+
+            if self.height <= self.width {
+                // Our atlas is wider than it is tall, so the image is put at
+                // the bottom of the atlas, to make it more square.
+
+                if self.width > w {
                     self.rects.push(Rect {
-                        x: rect.x + w,
-                        y: rect.y,
-                        w: rect.w - w,
+                        x: w,
+                        y: self.height,
+                        w: self.width - w,
                         h: h
                     });
-                }
-
-                if rect.h != h {
+                } else if self.width < w {
                     self.rects.push(Rect {
-                        x: rect.x,
-                        y: rect.y + h,
-                        w: w,
-                        h: rect.h - h
+                        x: self.width,
+                        y: 0,
+                        w: w - self.width,
+                        h: self.height
                     });
                 }
 
-                if rect.w != w && rect.h != h {
-                    self.rects.push(Rect {
-                        x: rect.x + w,
-                        y: rect.y + h,
-                        w: rect.w - w,
-                        h: rect.h - h
-                    });
-                }
+                if w <= self.width {
+                    // The image is already wide enough.
 
-                self.image = Some(Box::new(Function::new(
-                    cur_width, cur_height,
-                    {
-                        let rect = rect.clone();
-                        move |x, y| unsafe {
-                            if rect.x <= x && rect.y <= y {
-                                let (x, y) = (x - rect.x, y - rect.y);
-                                if x < w && y < h {
-                                    return image.pixel(x, y);
-                                }
-                            }
+                    self.bytes.reserve(T::width() * self.width * h);
 
-                            current.pixel(x, y)
+                    for y in self.height..(self.height + h) {
+                        for x in 0..w {
+                            let pixel = T::Bytes::from(unsafe {
+                                image.pixel(x, y)
+                            });
+                            self.bytes.put_slice(pixel.as_ref());
+                        }
+                        for _ in w..self.width {
+                            let pixel = T::Bytes::from(self.blank.clone());
+                            self.bytes.put_slice(pixel.as_ref());
                         }
                     }
-                )));
 
-                (rect.x, rect.y)
-            } else {
-                if cur_height <= cur_width {
-                    if cur_width > w {
-                        self.rects.push(Rect {
-                            x: w,
-                            y: cur_height,
-                            w: cur_width - w,
-                            h: h
-                        });
-                    } else if cur_width < w {
-                        self.rects.push(Rect {
-                            x: cur_width,
-                            y: 0,
-                            w: w - cur_width,
-                            h: cur_height
-                        });
-                    }
-
-                    self.image = Some(Box::new(Function::new(
-                        cur_width, cur_height + h,
-                        {
-                            let blank = self.blank.clone();
-                            move |x, y| unsafe {
-                                if y < cur_height {
-                                    current.pixel(x, y)
-                                } else if x < w {
-                                    image.pixel(x, y - cur_height)
-                                } else {
-                                    blank.clone()
-                                }
-                            }
-                        }
-                    )));
-
-                    (0, cur_height)
+                    self.height = self.height + h;
                 } else {
-                    if cur_height > h {
-                        self.rects.push(Rect {
-                            x: cur_width,
-                            y: h,
-                            w: w,
-                            h: cur_height - h
-                        });
-                    } else if cur_height < h {
-                        self.rects.push(Rect {
-                            x: 0,
-                            y: cur_height,
-                            w: cur_width,
-                            h: h - cur_height
-                        });
+                    // We need to make the image wider.
+
+                    let cap = T::width() * (self.height + h) * w;
+                    self.scratch.clear();
+                    self.scratch.reserve(cap);
+
+                    for chunk in self.bytes.chunks(T::width() * self.width) {
+                        self.scratch.put_slice(chunk);
+                        for _ in self.width..w {
+                            let pixel = T::Bytes::from(self.blank.clone());
+                            self.scratch.put_slice(pixel.as_ref());
+                        }
                     }
 
-                    self.image = Some(Box::new(Function::new(
-                        cur_width + w, cur_height,
-                        {
-                            let blank = self.blank.clone();
-                            move |x, y| unsafe {
-                                if x < cur_width {
-                                    current.pixel(x, y)
-                                } else if y < h {
-                                    image.pixel(x - cur_width, y)
-                                } else {
-                                    blank.clone()
-                                }
-                            }
+                    for y in 0..h {
+                        for x in 0..w {
+                            let pixel = T::Bytes::from(unsafe {
+                                image.pixel(x, y)
+                            });
+                            self.scratch.put_slice(pixel.as_ref());
                         }
-                    )));
+                    }
 
-                    (cur_width, 0)
+                    mem::swap(&mut self.bytes, &mut self.scratch);
+                    self.width = w;
+                    self.height = self.height + h;
                 }
+
+                (0, self.height)
+            } else {
+                // Our atlas is taller than it is wide, so the image is put to
+                // the right of the atlas, to make it more square.
+
+                if self.height > h {
+                    self.rects.push(Rect {
+                        x: self.width,
+                        y: h,
+                        w: w,
+                        h: self.height - h
+                    });
+                } else if self.height < h {
+                    self.rects.push(Rect {
+                        x: 0,
+                        y: self.height,
+                        w: self.width,
+                        h: h - self.height
+                    });
+                }
+
+                let new_height = if self.height <= h { h } else { self.height };
+                let new_width = self.width + w;
+
+                let cap = T::width() * new_width * new_height;
+                self.scratch.clear();
+                self.scratch.reserve(cap);
+
+                for (y, chunk) in
+                    self.bytes
+                        .chunks(T::width() * self.width)
+                        .enumerate()
+                {
+                    self.scratch.put_slice(chunk);
+                    if y < h {
+                        for x in 0..w {
+                            let pixel = T::Bytes::from(unsafe {
+                                image.pixel(x, y)
+                            });
+                            self.scratch.put_slice(pixel.as_ref());
+                        }
+                    } else {
+                        for _ in 0..w {
+                            let pixel = T::Bytes::from(self.blank.clone());
+                            self.scratch.put_slice(pixel.as_ref());
+                        }
+                    }
+                }
+
+                for y in self.height..h {
+                    for _ in 0..self.width {
+                        let pixel = T::Bytes::from(self.blank.clone());
+                        self.scratch.put_slice(pixel.as_ref());
+                    }
+                    for x in 0..w {
+                        let pixel = T::Bytes::from(unsafe {
+                            image.pixel(x, y)
+                        });
+                        self.scratch.put_slice(pixel.as_ref());
+                    }
+                }
+
+                mem::swap(&mut self.bytes, &mut self.scratch);
+                self.width = new_width;
+                self.height = new_height;
+
+                (self.width, 0)
             }
-        } else {
-            self.image = Some(image.into());
-            (0, 0)
-        }
-    }
-
-    /// Internally converts the backing image into a byte-buffer.
-    ///
-    /// This should drastically improve the speed of accessing an image, but
-    /// isn't exactly *cheap*, so do it after adding all your images.
-    pub fn collapse(&mut self) where T: AsBytes + Sync + 'static {
-        let mut image = None;
-        mem::swap(&mut self.image, &mut image);
-
-        if let Some(image) = image {
-            self.image = Some(Box::new(ChunkyFrame::new(image)));
         }
     }
 }
 
 impl<T> Into<ChunkyFrame<T>> for Atlas<T> where T: AsBytes {
     fn into(self) -> ChunkyFrame<T> {
-        if let Some(ref image) = self.image {
-            ChunkyFrame::new(image)
-        } else {
-            ChunkyFrame::from_bytes(0, 0, Vec::new().into())
-        }
+        ChunkyFrame::from_bytes(self.width, self.height, self.bytes.freeze())
     }
 }
 
-impl<T> Image for Atlas<T> {
+impl<T> Image for Atlas<T> where T: AsBytes {
     type Pixel = T;
 
     fn width(&self) -> usize {
-        if let Some(ref image) = self.image {
-            image.width()
-        } else {
-            0
-        }
+        self.width
     }
 
     fn height(&self) -> usize {
-        if let Some(ref image) = self.image {
-            image.height()
-        } else {
-            0
-        }
+        self.height
     }
 
     unsafe fn pixel(&self, x: usize, y: usize) -> Self::Pixel {
-        self.image.as_ref().unwrap().pixel(x, y)
+        let off = T::width() * (y * self.width + x);
+        let mut bytes = T::Bytes::default();
+
+        ptr::copy_nonoverlapping(
+            self.bytes.as_ptr().offset(off as isize),
+            bytes.as_mut().as_mut_ptr(),
+            T::width()
+        );
+
+        bytes.into()
     }
 }
 

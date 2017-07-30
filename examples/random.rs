@@ -11,7 +11,7 @@ use rand::distributions::{Range, IndependentSample};
 /// Sorts the data before passing it in - this is almost essential.
 const SORT: bool = true;
 /// The number of images to add to the atlas.
-const FRAMES: usize = 1000;
+const FRAMES: usize = 5000;
 /// Prints rectangle information that can be pasted into
 /// [this demo](http://codeincomplete.com/posts/bin-packing/demo/).
 const PRINT_RECTS: bool = false;
@@ -54,9 +54,11 @@ fn main() {
         // ));
     }
 
+    println!("Adding frames to atlas...");
+
     let mut atlas = Atlas::new(Rgba(0, 0, 0, 0));
     for frame in frames {
-        atlas.add(Box::new(frame) as Box<_>);
+        atlas.add(frame);
     }
 
     let total = atlas.width() * atlas.height();
