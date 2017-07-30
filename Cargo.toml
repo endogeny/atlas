@@ -1,6 +1,7 @@
 [package]
 name = "atlas"
 description = "Texture atlas generation (guillotine with dynamic resizing.)"
+keywords = ["texture", "atlas", "sprite", "stitching", "packing"]
 repository = "https://github.com/quadrupleslap/atlas"
 documentation = "https://docs.rs/atlas"
 license = "MIT"
