@@ -5,13 +5,12 @@ keywords = ["texture", "atlas", "sprite", "stitching", "packing"]
 repository = "https://github.com/quadrupleslap/atlas"
 documentation = "https://docs.rs/atlas"
 license = "MIT"
-version = "0.2.0"
+version = "0.3.0"
 authors = ["Ram <quadrupleslap@gmail.com>"]
 
 [dependencies]
-bytes = "0.4"
-framing = "0.3"
+framing = "0.6"
 
 [dev-dependencies]
 rand = "0.3"
-png-framing = "0.3"
+png-framing = "0.5"

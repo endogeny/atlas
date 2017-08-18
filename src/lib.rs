@@ -2,11 +2,9 @@
 
 //! Putting textures together, hopefully without wasting too much space.
 
-extern crate bytes;
 extern crate framing;
 
-use bytes::{BytesMut, BufMut};
-use framing::{AsBytes, Image, ChunkyFrame};
+use framing::{AsBytes, Image, Chunky};
 use std::{mem, ptr};
 
 /// Stores images, and automatically stitches them together.
@@ -16,8 +14,8 @@ use std::{mem, ptr};
 /// terms of decreasing size. Particularly good orders are by `width * height`
 /// and by `max(width, height)`, both in descending order.
 pub struct Atlas<T> {
-    bytes: BytesMut,
-    scratch: BytesMut,
+    bytes: Vec<u8>,
+    scratch: Vec<u8>,
     width: usize,
     height: usize,
     blank: T,
@@ -32,8 +30,8 @@ impl<T> Atlas<T> {
     /// achieved.
     pub fn new(blank: T) -> Self {
         Atlas {
-            bytes: BytesMut::new(),
-            scratch: BytesMut::new(),
+            bytes: Vec::new(),
+            scratch: Vec::new(),
             width: 0,
             height: 0,
             blank: blank,
@@ -64,7 +62,7 @@ impl<T> Atlas<T> {
             self.height = h;
 
             for (_, _, pixel) in framing::iter(&image) {
-                self.bytes.put_slice(T::Bytes::from(pixel).as_ref())
+                self.bytes.extend_from_slice(T::Bytes::from(pixel).as_ref())
             }
 
             return (0, 0);
@@ -160,11 +158,11 @@ impl<T> Atlas<T> {
                             let pixel = T::Bytes::from(unsafe {
                                 image.pixel(x, y)
                             });
-                            self.bytes.put_slice(pixel.as_ref());
+                            self.bytes.extend_from_slice(pixel.as_ref());
                         }
                         for _ in w..self.width {
                             let pixel = T::Bytes::from(self.blank.clone());
-                            self.bytes.put_slice(pixel.as_ref());
+                            self.bytes.extend_from_slice(pixel.as_ref());
                         }
                     }
 
@@ -177,10 +175,10 @@ impl<T> Atlas<T> {
                     self.scratch.reserve(cap);
 
                     for chunk in self.bytes.chunks(T::width() * self.width) {
-                        self.scratch.put_slice(chunk);
+                        self.scratch.extend_from_slice(chunk);
                         for _ in self.width..w {
                             let pixel = T::Bytes::from(self.blank.clone());
-                            self.scratch.put_slice(pixel.as_ref());
+                            self.scratch.extend_from_slice(pixel.as_ref());
                         }
                     }
 
@@ -189,7 +187,7 @@ impl<T> Atlas<T> {
                             let pixel = T::Bytes::from(unsafe {
                                 image.pixel(x, y)
                             });
-                            self.scratch.put_slice(pixel.as_ref());
+                            self.scratch.extend_from_slice(pixel.as_ref());
                         }
                     }
 
@@ -231,18 +229,18 @@ impl<T> Atlas<T> {
                         .chunks(T::width() * self.width)
                         .enumerate()
                 {
-                    self.scratch.put_slice(chunk);
+                    self.scratch.extend_from_slice(chunk);
                     if y < h {
                         for x in 0..w {
                             let pixel = T::Bytes::from(unsafe {
                                 image.pixel(x, y)
                             });
-                            self.scratch.put_slice(pixel.as_ref());
+                            self.scratch.extend_from_slice(pixel.as_ref());
                         }
                     } else {
                         for _ in 0..w {
                             let pixel = T::Bytes::from(self.blank.clone());
-                            self.scratch.put_slice(pixel.as_ref());
+                            self.scratch.extend_from_slice(pixel.as_ref());
                         }
                     }
                 }
@@ -250,13 +248,13 @@ impl<T> Atlas<T> {
                 for y in self.height..h {
                     for _ in 0..self.width {
                         let pixel = T::Bytes::from(self.blank.clone());
-                        self.scratch.put_slice(pixel.as_ref());
+                        self.scratch.extend_from_slice(pixel.as_ref());
                     }
                     for x in 0..w {
                         let pixel = T::Bytes::from(unsafe {
                             image.pixel(x, y)
                         });
-                        self.scratch.put_slice(pixel.as_ref());
+                        self.scratch.extend_from_slice(pixel.as_ref());
                     }
                 }
 
@@ -270,9 +268,9 @@ impl<T> Atlas<T> {
     }
 }
 
-impl<T> Into<ChunkyFrame<T>> for Atlas<T> where T: AsBytes {
-    fn into(self) -> ChunkyFrame<T> {
-        ChunkyFrame::from_bytes(self.width, self.height, self.bytes.freeze())
+impl<T> Into<Chunky<T>> for Atlas<T> where T: AsBytes {
+    fn into(self) -> Chunky<T> {
+        Chunky::from_bytes(self.width, self.height, self.bytes)
     }
 }
 

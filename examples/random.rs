@@ -5,7 +5,7 @@ extern crate rand;
 
 use atlas::Atlas;
 use framing::{Rgba, Function, Image};
-use png_framing::Png;
+use png_framing as png;
 use rand::distributions::{Range, IndependentSample};
 
 /// Sorts the data before passing it in - this is almost essential.
@@ -65,6 +65,6 @@ fn main() {
     let efficiency = used as f64 / total as f64;
 
     println!("Generated with {}% efficiency!", efficiency * 100.0);
-    Png::new(atlas).save("output.png").unwrap();
+    png::save(&atlas.into(), "output.png").unwrap();
     println!("Atlas saved to `output.png`!");
 }
